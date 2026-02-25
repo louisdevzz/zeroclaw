@@ -7,9 +7,6 @@
  * Test:     zeroclaw skill test . --args '{"name":"ZeroClaw"}'
  */
 
-// @ts-ignore — Javy provides synchronous IO
-const rawInput = new TextDecoder().decode(Javy.IO.readSync());
-
 interface Args {
   name: string;
 }
@@ -27,6 +24,8 @@ function run(args: Args): ToolResult {
 
 let result: ToolResult;
 try {
+  // @ts-ignore — Javy provides synchronous IO
+  const rawInput = new TextDecoder().decode(Javy.IO.readSync());
   const input = JSON.parse(rawInput);
   if (!input.name) throw new Error('missing required field: name');
   result = run(input as Args);

@@ -1117,6 +1117,7 @@ Start from the docs hub for a task-oriented map:
 - Unified docs TOC: [`docs/SUMMARY.md`](docs/SUMMARY.md)
 - Commands reference: [`docs/commands-reference.md`](docs/commands-reference.md)
 - Config reference: [`docs/config-reference.md`](docs/config-reference.md)
+- WASM skills guide: [`docs/wasm-tools-guide.md`](docs/wasm-tools-guide.md)
 - Providers reference: [`docs/providers-reference.md`](docs/providers-reference.md)
 - Channels reference: [`docs/channels-reference.md`](docs/channels-reference.md)
 - Operations runbook: [`docs/operations-runbook.md`](docs/operations-runbook.md)

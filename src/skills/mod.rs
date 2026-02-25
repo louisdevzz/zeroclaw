@@ -878,24 +878,36 @@ pub fn scaffold_skill(
 
     let bin_name = name.replace('-', "_");
 
-    for file in tmpl.files {
-        let path = skill_dir.join(file.path);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+    // Run all file writes in a closure; remove skill_dir on any error to avoid
+    // leaving a partial scaffold behind (mirrors install_registry_skill_source).
+    let result = (|| -> Result<()> {
+        for file in tmpl.files {
+            let path = skill_dir.join(file.path);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let content = templates::apply(file.content, name, &bin_name);
+            std::fs::write(&path, content)?;
         }
-        let content = templates::apply(file.content, name, &bin_name);
-        std::fs::write(&path, content)?;
+
+        // Common files not in templates
+        std::fs::write(
+            skill_dir.join(".gitignore"),
+            "tool.wasm\nnode_modules/\ntarget/\n*.js.map\n",
+        )?;
+        write_skill_md(&skill_dir, name, tmpl.description, tmpl.test_args)?;
+        write_readme(&skill_dir, name, tmpl.language, tmpl.test_args)?;
+
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&skill_dir);
+            Err(e)
+        }
     }
-
-    // Common files not in templates
-    std::fs::write(
-        skill_dir.join(".gitignore"),
-        "tool.wasm\nnode_modules/\ntarget/\n*.js.map\n",
-    )?;
-    write_skill_md(&skill_dir, name, tmpl.description, tmpl.test_args)?;
-    write_readme(&skill_dir, name, tmpl.language, tmpl.test_args)?;
-
-    Ok(())
 }
 
 fn write_skill_md(
@@ -1130,12 +1142,28 @@ fn is_registry_source(source: &str) -> bool {
     if ns.is_empty() || name_ver.is_empty() || ns.contains("..") || name_ver.contains("..") {
         return false;
     }
-    // Must be identifier-safe characters only
-    let is_safe = |s: &str| {
+    // Must be identifier-safe characters only ('.' and '@' only in version segment)
+    let is_safe_id = |s: &str| {
         s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '.')
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
     };
-    is_safe(ns) && is_safe(name_ver)
+    // name_ver may be `name` or `name@version`; '@' is only allowed once as separator
+    let (base_name, version_part) = match name_ver.split_once('@') {
+        Some((n, v)) => (n, Some(v)),
+        None => (name_ver, None),
+    };
+    if base_name.is_empty() {
+        return false;
+    }
+    if let Some(v) = version_part {
+        if v.is_empty() || v.contains('@') {
+            return false;
+        }
+        if !is_safe_id(v) {
+            return false;
+        }
+    }
+    is_safe_id(ns) && is_safe_id(base_name)
 }
 
 /// Download a skill package (WASM tools + SKILL.toml) from the ZeroMarket registry.
@@ -1162,6 +1190,20 @@ fn install_registry_skill_source(
         None => (source, None),
     };
     let parts: Vec<&str> = ns_name.split('/').collect();
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+        anyhow::bail!(
+            "invalid registry source '{}': expected namespace/name[@version]",
+            source
+        );
+    }
+    if let Some(v) = version {
+        if v.is_empty() || v.contains('/') {
+            anyhow::bail!(
+                "invalid version in '{}': version must be non-empty and contain no '/'",
+                source
+            );
+        }
+    }
     let (namespace, pkg_name) = (parts[0], parts[1]);
 
     // Build registry API URL
@@ -1193,8 +1235,19 @@ fn install_registry_skill_source(
 
         // Download each tool
         for tool in &index.tools {
-            // Validate tool name — no path traversal
-            if tool.name.contains("..") || tool.name.contains('/') || tool.name.contains('\\') {
+            // Validate tool name: must be a single normal path component (no traversal).
+            let tool_name_path = std::path::Path::new(&tool.name);
+            let is_single_normal = {
+                use std::path::Component;
+                let mut comps = tool_name_path.components();
+                matches!(comps.next(), Some(Component::Normal(_))) && comps.next().is_none()
+            };
+            if !is_single_normal
+                || !tool
+                    .name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
                 anyhow::bail!("registry returned unsafe tool name: '{}'", tool.name);
             }
 
@@ -1329,8 +1382,11 @@ pub fn handle_command(command: crate::SkillCommands, config: &crate::config::Con
             scaffold_skill(&name, &template, &dest)
                 .with_context(|| format!("failed to scaffold skill '{name}'"))?;
 
-            // Resolve template again for display (find is cheap)
-            let tmpl = templates::find(&template).expect("template validated in scaffold_skill");
+            // Resolve template again for display (find is cheap; scaffold_skill already
+            // validated that the template exists, so this should never be None).
+            let tmpl = templates::find(&template).ok_or_else(|| {
+                anyhow::anyhow!("template '{}' not found after scaffold", template)
+            })?;
 
             let skill_dir = dest.join(&name);
             println!(

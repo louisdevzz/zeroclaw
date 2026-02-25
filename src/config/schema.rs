@@ -5188,6 +5188,23 @@ impl Config {
         // Proxy (delegate to existing validation)
         self.proxy.validate()?;
 
+        // WASM config
+        if self.wasm.memory_limit_mb == 0 || self.wasm.memory_limit_mb > 256 {
+            anyhow::bail!(
+                "wasm.memory_limit_mb must be between 1 and 256, got {}",
+                self.wasm.memory_limit_mb
+            );
+        }
+        if self.wasm.fuel_limit == 0 {
+            anyhow::bail!("wasm.fuel_limit must be greater than 0");
+        }
+        if self.wasm.registry_url.is_empty() || !self.wasm.registry_url.starts_with("https://") {
+            anyhow::bail!(
+                "wasm.registry_url must be a valid HTTPS URL, got '{}'",
+                self.wasm.registry_url
+            );
+        }
+
         Ok(())
     }
 

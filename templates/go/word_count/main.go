@@ -57,12 +57,23 @@ func main() {
 
 	result := ToolResult{
 		Success: true,
-		Output:  fmt.Sprintf("%d words, %d lines, %d characters", counts.Words, counts.Lines, counts.Characters),
-		Data:    &counts,
+		Output: fmt.Sprintf("%d %s, %d %s, %d %s",
+			counts.Words, plural(counts.Words, "word", "words"),
+			counts.Lines, plural(counts.Lines, "line", "lines"),
+			counts.Characters, plural(counts.Characters, "character", "characters"),
+		),
+		Data: &counts,
 	}
 
 	out, _ := json.Marshal(result)
 	os.Stdout.Write(out)
+}
+
+func plural(n int, singular, pluralForm string) string {
+	if n == 1 {
+		return singular
+	}
+	return pluralForm
 }
 
 func writeError(msg string) {

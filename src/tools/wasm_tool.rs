@@ -25,8 +25,11 @@
 //! # Security
 //! - No filesystem preopened dirs (deny-by-default).
 //! - No network sockets (WASI sockets not enabled).
-//! - Execution time capped via OS process timeout.
-//! - Output capped at 1 MiB.
+//! - Execution time capped via wasmtime epoch interruption: a 1 Hz ticker
+//!   thread advances the epoch each second; the WASM store's deadline is set to
+//!   [`WASM_TIMEOUT_SECS`] epochs so runaway modules are preempted without
+//!   relying on OS-level process signals.
+//! - Output capped at 1 MiB (enforced by [`MemoryOutputPipe`] capacity).
 
 use super::traits::{Tool, ToolResult};
 use anyhow::{bail, Context};
@@ -143,13 +146,8 @@ mod inner {
             if raw.is_empty() {
                 bail!("WASM tool wrote nothing to stdout");
             }
-            if raw.len() > MAX_OUTPUT_BYTES {
-                bail!(
-                    "WASM tool output too large: {} bytes (max {})",
-                    raw.len(),
-                    MAX_OUTPUT_BYTES
-                );
-            }
+            // Note: MemoryOutputPipe::new(MAX_OUTPUT_BYTES) already caps writes
+            // at construction time, so no separate size check is needed here.
 
             serde_json::from_slice::<ToolResult>(&raw)
                 .context("WASM tool stdout is not valid ToolResult JSON")
@@ -358,6 +356,21 @@ fn load_single_tool(
             return;
         }
     };
+
+    // Validate manifest.name: must be a safe identifier (no path separators).
+    let name_ok = !manifest.name.is_empty()
+        && manifest
+            .name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if !name_ok {
+        tracing::warn!(
+            path = %manifest_path.display(),
+            name = %manifest.name,
+            "skipping WASM tool: manifest name contains invalid characters"
+        );
+        return;
+    }
 
     match WasmTool::load(
         wasm,

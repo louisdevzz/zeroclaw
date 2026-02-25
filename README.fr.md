@@ -286,6 +286,7 @@ kind = "native"    # ou "docker" (nécessite Docker)
 **Documents de référence complets :**
 
 - [Référence de Configuration](docs/config-reference.md) — tous les paramètres, validations, valeurs par défaut
+- [Guide des skills WASM](docs/wasm-tools-guide.md) — créer, installer et publier des skills WASM
 - [Référence des Fournisseurs](docs/providers-reference.md) — configurations spécifiques aux fournisseurs d'IA
 - [Référence des Canaux](docs/channels-reference.md) — Telegram, Matrix, Slack, Discord et plus
 - [Opérations](docs/operations-runbook.md) — surveillance en production, rotation des secrets, mise à l'échelle

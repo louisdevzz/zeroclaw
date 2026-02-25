@@ -301,6 +301,7 @@ allow_public_bind = false
 - ドキュメントハブ（日本語）: [`docs/README.ja.md`](docs/README.ja.md)
 - コマンドリファレンス: [`docs/commands-reference.md`](docs/commands-reference.md)
 - 設定リファレンス: [`docs/config-reference.md`](docs/config-reference.md)
+- WASM スキルガイド: [`docs/wasm-tools-guide.md`](docs/wasm-tools-guide.md)
 - Provider リファレンス: [`docs/providers-reference.md`](docs/providers-reference.md)
 - Channel リファレンス: [`docs/channels-reference.md`](docs/channels-reference.md)
 - 運用ガイド（Runbook）: [`docs/operations-runbook.md`](docs/operations-runbook.md)

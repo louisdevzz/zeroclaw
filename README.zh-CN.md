@@ -45,7 +45,7 @@
 > 
 > 技术标识（命令、配置键、API 路径、Trait 名称）保持英文，避免语义漂移。
 > 
-> 最后对齐时间：**2026-02-22**。
+> 最后对齐时间：**2026-02-25**。
 
 ## 📢 公告板
 
@@ -306,6 +306,7 @@ allow_public_bind = false
 - 文档总览（简体中文）：[`docs/README.zh-CN.md`](docs/README.zh-CN.md)
 - 命令参考：[`docs/commands-reference.md`](docs/commands-reference.md)
 - 配置参考：[`docs/config-reference.md`](docs/config-reference.md)
+- WASM 技能指南：[`docs/wasm-tools-guide.md`](docs/wasm-tools-guide.md)
 - Provider 参考：[`docs/providers-reference.md`](docs/providers-reference.md)
 - Channel 参考：[`docs/channels-reference.md`](docs/channels-reference.md)
 - 运维手册：[`docs/operations-runbook.md`](docs/operations-runbook.md)
