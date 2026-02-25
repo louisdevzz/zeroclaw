@@ -1142,9 +1142,9 @@ fn is_registry_source(source: &str) -> bool {
 /// Download a skill package (WASM tools + SKILL.toml) from the ZeroMarket registry.
 ///
 /// Package layout on the registry:
-/// ```
+/// ```text
 /// GET <registry_url>/v1/packages/<namespace>/<name>[/<version>]
-/// → 200 JSON: { "name": "...", "version": "...", "tools": [{ "name": "...", "wasm_url": "...", "manifest_url": "..." }] }
+/// -> 200 JSON: { "name": "...", "version": "...", "tools": [{ "name": "...", "wasm_url": "...", "manifest_url": "..." }] }
 /// ```
 ///
 /// The function:
