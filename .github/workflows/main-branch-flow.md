@@ -13,11 +13,10 @@ Use this with:
 | Event | Main workflows |
 | --- | --- |
 | PR activity (`pull_request_target`) | `pr-intake-checks.yml`, `pr-labeler.yml`, `pr-auto-response.yml` |
-| PR activity (`pull_request`) | `ci-run.yml`, `feature-matrix.yml` (Rust/workflow paths), `sec-audit.yml`, `sec-codeql.yml` (when Rust/codeql paths change), `main-promotion-gate.yml` (for `main` PRs), plus path-scoped workflows |
-| Push to `dev`/`main` | `ci-run.yml`, `feature-matrix.yml` (Rust/workflow paths), `sec-audit.yml`, `sec-codeql.yml` (when Rust/codeql paths change), plus path-scoped workflows |
-| Merge queue (`merge_group`) | `ci-run.yml`, `feature-matrix.yml`, `sec-audit.yml`, `sec-codeql.yml` |
-| Tag push (`v*`) | `pub-release.yml` publish mode, `pub-docker-img.yml` publish job, `pub-prerelease.yml` (for `v*-alpha.*`, `v*-beta.*`, `v*-rc.*`) |
-| Scheduled/manual | `pub-release.yml` verification mode, `pub-prerelease.yml` (manual), `ci-canary-gate.yml`, `pub-homebrew-core.yml` (manual), `sec-codeql.yml`, `ci-connectivity-probes.yml`, `ci-provider-connectivity.yml`, `ci-reproducible-build.yml`, `ci-supply-chain-provenance.yml`, `ci-change-audit.yml` (manual), `ci-rollback.yml` (weekly/manual), `feature-matrix.yml`, `nightly-all-features.yml`, `docs-deploy.yml` (manual), `test-fuzz.yml`, `pr-check-stale.yml`, `pr-check-status.yml`, `sync-contributors.yml`, `test-benchmarks.yml`, `test-e2e.yml` |
+| PR activity (`pull_request`) | `ci-run.yml`, `sec-audit.yml`, `main-promotion-gate.yml` (for `main` PRs), plus path-scoped workflows |
+| Push to `dev`/`main` | `ci-run.yml`, `sec-audit.yml`, plus path-scoped workflows |
+| Tag push (`v*`) | `pub-release.yml` publish mode, `pub-docker-img.yml` publish job |
+| Scheduled/manual | `pub-release.yml` verification mode, `sec-codeql.yml`, `feature-matrix.yml`, `test-fuzz.yml`, `pr-check-stale.yml`, `pr-check-status.yml`, `sync-contributors.yml`, `test-benchmarks.yml`, `test-e2e.yml` |
 
 ## Runtime and Docker Matrix
 
@@ -35,7 +34,6 @@ Observed averages below are from recent completed runs (sampled from GitHub Acti
 | `pub-docker-img.yml` (`pull_request`) | Docker build-input PR changes | 240.4s | Yes | Yes | No |
 | `pub-docker-img.yml` (`push`) | tag push `v*` | 139.9s | Yes | No | Yes |
 | `pub-release.yml` | Tag push `v*` (publish) + manual/scheduled verification (no publish) | N/A in recent sample | No | No | No |
-| `pub-homebrew-core.yml` | Manual workflow dispatch only | N/A in recent sample | No | No | No |
 
 Notes:
 
@@ -58,10 +56,10 @@ Notes:
    - `feature-matrix.yml` (Rust/workflow path scope)
    - `sec-audit.yml`
    - `sec-codeql.yml` (if Rust/codeql paths changed)
-   - path-scoped workflows if matching files changed:
-     - `pub-docker-img.yml` (Docker build-input paths only)
-     - `docs-deploy.yml` (docs + README markdown paths)
-     - `workflow-sanity.yml` (workflow files only)
+     - path-scoped workflows if matching files changed:
+       - `pub-docker-img.yml` (Docker build-input paths only)
+       - `docs-deploy.yml` (docs + README markdown paths; deploy contract guard enforces promotion + rollback ref policy)
+       - `workflow-sanity.yml` (workflow files only)
      - `pr-label-policy-check.yml` (label-policy files only)
      - `ci-change-audit.yml` (CI/security path changes)
      - `ci-provider-connectivity.yml` (probe config/script/workflow changes)
@@ -163,10 +161,13 @@ Workflow: `.github/workflows/pub-docker-img.yml`
 1. `publish` job runs on tag pushes `v*` only.
 2. Workflow trigger includes semantic version tag pushes (`v*`) only.
 3. Login to `ghcr.io` uses `${{ github.actor }}` and `${{ secrets.GITHUB_TOKEN }}`.
-4. Tag computation includes semantic tag from pushed git tag (`vX.Y.Z`) + SHA tag.
+4. Tag computation includes semantic tag from pushed git tag (`vX.Y.Z`) + SHA tag (`sha-<12>`) + `latest`.
 5. Multi-platform publish is used for tag pushes (`linux/amd64,linux/arm64`).
-6. Typical runtime in recent sample: ~139.9s.
-7. Result: pushed image tags under `ghcr.io/<owner>/<repo>`.
+6. `scripts/ci/ghcr_publish_contract_guard.py` validates anonymous pullability and digest parity across `vX.Y.Z`, `sha-<12>`, and `latest`, then emits rollback candidate mapping evidence.
+7. Trivy scans are emitted for version, SHA, and latest references.
+8. `scripts/ci/ghcr_vulnerability_gate.py` validates Trivy JSON outputs against `.github/release/ghcr-vulnerability-policy.json` and emits audit-event evidence.
+9. Typical runtime in recent sample: ~139.9s.
+10. Result: pushed image tags under `ghcr.io/<owner>/<repo>` with publish-contract + vulnerability-gate + scan artifacts.
 
 Important: Docker publish now requires a `v*` tag push; regular `dev`/`main` branch pushes do not publish images.
 
@@ -182,9 +183,12 @@ Workflow: `.github/workflows/pub-release.yml`
    - publish mode enforces actor authorization, stable annotated tag policy, `origin/main` ancestry, and `release_tag` == `Cargo.toml` version at the tag commit.
    - trigger provenance is emitted as `release-trigger-guard` artifacts.
 3. `build-release` builds matrix artifacts across Linux/macOS/Windows targets.
-4. `verify-artifacts` enforces presence of all expected archives before any publish attempt.
-5. In publish mode, workflow generates SBOM (`CycloneDX` + `SPDX`), `SHA256SUMS`, keyless cosign signatures, and verifies GHCR release-tag availability.
-6. In publish mode, workflow creates/updates the GitHub Release for the resolved tag and commit-ish.
+4. `verify-artifacts` runs `scripts/ci/release_artifact_guard.py` against `.github/release/release-artifact-contract.json` in verify-stage mode (archive contract required; manifest/SBOM/notice checks intentionally skipped) and uploads `release-artifact-guard-verify` evidence.
+5. In publish mode, workflow generates SBOM (`CycloneDX` + `SPDX`), `SHA256SUMS`, and a checksum provenance statement (`zeroclaw.sha256sums.intoto.json`) plus audit-event envelope.
+6. In publish mode, after manifest generation, workflow reruns `release_artifact_guard.py` in full-contract mode and emits `release-artifact-guard.publish.json` plus `audit-event-release-artifact-guard-publish.json`.
+7. In publish mode, workflow keyless-signs release artifacts and composes a supply-chain release-notes preface via `release_notes_with_supply_chain_refs.py`.
+8. In publish mode, workflow verifies GHCR release-tag availability.
+9. In publish mode, workflow creates/updates the GitHub Release for the resolved tag and commit-ish, combining generated supply-chain preface with GitHub auto-generated commit notes.
 
 Pre-release path:
 
@@ -197,12 +201,6 @@ Canary policy lane:
 1. `.github/workflows/ci-canary-gate.yml` runs weekly or manually.
 2. `scripts/ci/canary_guard.py` evaluates metrics against `.github/release/canary-policy.json`.
 3. Decision output is explicit (`promote`, `hold`, `abort`) with auditable artifacts and optional dispatch signal.
-
-Manual Homebrew formula flow:
-
-1. Run `.github/workflows/pub-homebrew-core.yml` with `release_tag=vX.Y.Z`.
-2. Use `dry_run=true` first to validate formula patch and metadata.
-3. Use `dry_run=false` to push from bot fork and open `homebrew-core` PR.
 
 ## Merge/Policy Notes
 
@@ -259,7 +257,7 @@ flowchart TD
   T --> P["pub-docker-img.yml publish job"]
   R --> R1["Artifacts + SBOM + checksums + signatures + GitHub Release"]
   W --> R2["Verification build only (no GitHub Release publish)"]
-  P --> P1["Push ghcr image tags (version + sha)"]
+  P --> P1["Push ghcr image tags (version + sha + latest)"]
 ```
 
 ## Quick Troubleshooting

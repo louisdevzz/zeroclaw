@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use directories::UserDirs;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 #[cfg(unix)]
@@ -239,6 +239,10 @@ pub struct Config {
     /// Delegate agent configurations for multi-agent workflows.
     #[serde(default)]
     pub agents: HashMap<String, DelegateAgentConfig>,
+
+    /// Delegate coordination runtime configuration (`[coordination]`).
+    #[serde(default)]
+    pub coordination: CoordinationConfig,
 
     /// Hooks configuration (lifecycle hooks and built-in hook toggles).
     #[serde(default)]
@@ -555,6 +559,69 @@ impl Default for AgentsIpcConfig {
     }
 }
 
+fn default_coordination_enabled() -> bool {
+    true
+}
+
+fn default_coordination_lead_agent() -> String {
+    "delegate-lead".into()
+}
+
+fn default_coordination_max_inbox_messages_per_agent() -> usize {
+    256
+}
+
+fn default_coordination_max_dead_letters() -> usize {
+    256
+}
+
+fn default_coordination_max_context_entries() -> usize {
+    512
+}
+
+fn default_coordination_max_seen_message_ids() -> usize {
+    4096
+}
+
+/// Delegate coordination runtime configuration (`[coordination]` section).
+///
+/// Controls typed delegate message-bus integration used by `delegate` and
+/// `delegate_coordination_status` tools.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CoordinationConfig {
+    /// Enable delegate coordination tracing/runtime bus integration.
+    #[serde(default = "default_coordination_enabled")]
+    pub enabled: bool,
+    /// Logical lead-agent identity used as coordinator sender/recipient.
+    #[serde(default = "default_coordination_lead_agent")]
+    pub lead_agent: String,
+    /// Maximum retained inbox messages per registered agent.
+    #[serde(default = "default_coordination_max_inbox_messages_per_agent")]
+    pub max_inbox_messages_per_agent: usize,
+    /// Maximum retained dead-letter entries.
+    #[serde(default = "default_coordination_max_dead_letters")]
+    pub max_dead_letters: usize,
+    /// Maximum retained shared-context entries (`ContextPatch` state keys).
+    #[serde(default = "default_coordination_max_context_entries")]
+    pub max_context_entries: usize,
+    /// Maximum retained dedupe window size for processed message IDs.
+    #[serde(default = "default_coordination_max_seen_message_ids")]
+    pub max_seen_message_ids: usize,
+}
+
+impl Default for CoordinationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_coordination_enabled(),
+            lead_agent: default_coordination_lead_agent(),
+            max_inbox_messages_per_agent: default_coordination_max_inbox_messages_per_agent(),
+            max_dead_letters: default_coordination_max_dead_letters(),
+            max_context_entries: default_coordination_max_context_entries(),
+            max_seen_message_ids: default_coordination_max_seen_message_ids(),
+        }
+    }
+}
+
 /// Agent orchestration configuration (`[agent]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AgentConfig {
@@ -648,11 +715,11 @@ pub struct WasmConfig {
     pub enabled: bool,
     /// Maximum linear memory per WASM invocation in MiB.
     /// Valid range: 1..=256. Default: `64`.
-    #[serde(default = "default_wasm_memory_limit_mb")]
+    #[serde(default = "default_skill_wasm_memory_limit_mb")]
     pub memory_limit_mb: u64,
     /// CPU fuel budget per invocation (roughly one unit ≈ one WASM instruction).
     /// Default: 1_000_000_000.
-    #[serde(default = "default_wasm_fuel_limit")]
+    #[serde(default = "default_skill_wasm_fuel_limit")]
     pub fuel_limit: u64,
     /// URL of the ZeroMarket (or compatible) registry used by `zeroclaw skill install`.
     /// Default: the public ZeroMarket registry.
@@ -660,11 +727,11 @@ pub struct WasmConfig {
     pub registry_url: String,
 }
 
-fn default_wasm_memory_limit_mb() -> u64 {
+fn default_skill_wasm_memory_limit_mb() -> u64 {
     64
 }
 
-fn default_wasm_fuel_limit() -> u64 {
+fn default_skill_wasm_fuel_limit() -> u64 {
     1_000_000_000
 }
 
@@ -676,8 +743,8 @@ impl Default for WasmConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            memory_limit_mb: default_wasm_memory_limit_mb(),
-            fuel_limit: default_wasm_fuel_limit(),
+            memory_limit_mb: default_skill_wasm_memory_limit_mb(),
+            fuel_limit: default_skill_wasm_fuel_limit(),
             registry_url: default_registry_url(),
         }
     }
@@ -2365,7 +2432,7 @@ impl Default for AutonomyConfig {
 /// Runtime adapter configuration (`[runtime]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct RuntimeConfig {
-    /// Runtime kind (`native` | `docker`).
+    /// Runtime kind (`native` | `docker` | `wasm`).
     #[serde(default = "default_runtime_kind")]
     pub kind: String,
 
@@ -2373,12 +2440,23 @@ pub struct RuntimeConfig {
     #[serde(default)]
     pub docker: DockerRuntimeConfig,
 
+    /// WASM runtime settings (used when `kind = "wasm"`).
+    #[serde(default)]
+    pub wasm: WasmRuntimeConfig,
+
     /// Global reasoning override for providers that expose explicit controls.
     /// - `None`: provider default behavior
     /// - `Some(true)`: request reasoning/thinking when supported
     /// - `Some(false)`: disable reasoning/thinking when supported
     #[serde(default)]
     pub reasoning_enabled: Option<bool>,
+
+    /// Deprecated compatibility alias for `[provider].reasoning_level`.
+    /// - Canonical key: `provider.reasoning_level`
+    /// - Legacy key accepted for compatibility: `runtime.reasoning_level`
+    /// - When both are set, provider-level value wins.
+    #[serde(default)]
+    pub reasoning_level: Option<String>,
 }
 
 /// Docker runtime configuration (`[runtime.docker]` section).
@@ -2413,6 +2491,99 @@ pub struct DockerRuntimeConfig {
     pub allowed_workspace_roots: Vec<String>,
 }
 
+/// WASM runtime configuration (`[runtime.wasm]` section).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WasmRuntimeConfig {
+    /// Workspace-relative directory that stores `.wasm` modules.
+    #[serde(default = "default_wasm_tools_dir")]
+    pub tools_dir: String,
+
+    /// Fuel limit per invocation (instruction budget).
+    #[serde(default = "default_wasm_fuel_limit")]
+    pub fuel_limit: u64,
+
+    /// Memory limit per invocation in MB.
+    #[serde(default = "default_wasm_memory_limit_mb")]
+    pub memory_limit_mb: u64,
+
+    /// Maximum `.wasm` module size in MB.
+    #[serde(default = "default_wasm_max_module_size_mb")]
+    pub max_module_size_mb: u64,
+
+    /// Allow reading files from workspace inside WASM host calls (future-facing).
+    #[serde(default)]
+    pub allow_workspace_read: bool,
+
+    /// Allow writing files to workspace inside WASM host calls (future-facing).
+    #[serde(default)]
+    pub allow_workspace_write: bool,
+
+    /// Explicit host allowlist for outbound HTTP from WASM modules (future-facing).
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+
+    /// WASM runtime security controls (`[runtime.wasm.security]` section).
+    #[serde(default)]
+    pub security: WasmSecurityConfig,
+}
+
+/// How to handle invocation capabilities that exceed baseline runtime policy.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WasmCapabilityEscalationMode {
+    /// Reject any invocation that asks for capabilities above runtime config.
+    #[default]
+    Deny,
+    /// Automatically clamp invocation capabilities to runtime config ceilings.
+    Clamp,
+}
+
+/// Integrity policy for WASM modules pinned by SHA-256 digest.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WasmModuleHashPolicy {
+    /// Disable module hash validation.
+    Disabled,
+    /// Warn on missing or mismatched hashes, but allow execution.
+    #[default]
+    Warn,
+    /// Require exact hash match before execution.
+    Enforce,
+}
+
+/// Security policy controls for WASM runtime hardening.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WasmSecurityConfig {
+    /// Require `runtime.wasm.tools_dir` to stay workspace-relative and traversal-free.
+    #[serde(default = "default_true")]
+    pub require_workspace_relative_tools_dir: bool,
+
+    /// Reject module files that are symlinks before execution.
+    #[serde(default = "default_true")]
+    pub reject_symlink_modules: bool,
+
+    /// Reject `runtime.wasm.tools_dir` when it is itself a symlink.
+    #[serde(default = "default_true")]
+    pub reject_symlink_tools_dir: bool,
+
+    /// Strictly validate host allowlist entries (`host` or `host:port` only).
+    #[serde(default = "default_true")]
+    pub strict_host_validation: bool,
+
+    /// Capability escalation handling policy.
+    #[serde(default)]
+    pub capability_escalation_mode: WasmCapabilityEscalationMode,
+
+    /// Module digest verification policy.
+    #[serde(default)]
+    pub module_hash_policy: WasmModuleHashPolicy,
+
+    /// Optional pinned SHA-256 digest map keyed by module name (without `.wasm`).
+    #[serde(default)]
+    pub module_sha256: BTreeMap<String, String>,
+}
+
 fn default_runtime_kind() -> String {
     "native".into()
 }
@@ -2433,6 +2604,22 @@ fn default_docker_cpu_limit() -> Option<f64> {
     Some(1.0)
 }
 
+fn default_wasm_tools_dir() -> String {
+    "tools/wasm".into()
+}
+
+fn default_wasm_fuel_limit() -> u64 {
+    1_000_000
+}
+
+fn default_wasm_memory_limit_mb() -> u64 {
+    64
+}
+
+fn default_wasm_max_module_size_mb() -> u64 {
+    50
+}
+
 impl Default for DockerRuntimeConfig {
     fn default() -> Self {
         Self {
@@ -2447,12 +2634,43 @@ impl Default for DockerRuntimeConfig {
     }
 }
 
+impl Default for WasmRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            tools_dir: default_wasm_tools_dir(),
+            fuel_limit: default_wasm_fuel_limit(),
+            memory_limit_mb: default_wasm_memory_limit_mb(),
+            max_module_size_mb: default_wasm_max_module_size_mb(),
+            allow_workspace_read: false,
+            allow_workspace_write: false,
+            allowed_hosts: Vec::new(),
+            security: WasmSecurityConfig::default(),
+        }
+    }
+}
+
+impl Default for WasmSecurityConfig {
+    fn default() -> Self {
+        Self {
+            require_workspace_relative_tools_dir: true,
+            reject_symlink_modules: true,
+            reject_symlink_tools_dir: true,
+            strict_host_validation: true,
+            capability_escalation_mode: WasmCapabilityEscalationMode::Deny,
+            module_hash_policy: WasmModuleHashPolicy::Warn,
+            module_sha256: BTreeMap::new(),
+        }
+    }
+}
+
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             kind: default_runtime_kind(),
             docker: DockerRuntimeConfig::default(),
+            wasm: WasmRuntimeConfig::default(),
             reasoning_enabled: None,
+            reasoning_level: None,
         }
     }
 }
@@ -3652,6 +3870,10 @@ pub struct SecurityConfig {
     /// Emergency-stop state machine configuration.
     #[serde(default)]
     pub estop: EstopConfig,
+
+    /// Syscall anomaly detection profile for daemon shell/process execution.
+    #[serde(default)]
+    pub syscall_anomaly: SyscallAnomalyConfig,
 }
 
 /// OTP validation strategy.
@@ -3759,6 +3981,144 @@ impl Default for EstopConfig {
             enabled: false,
             state_file: default_estop_state_file(),
             require_otp_to_resume: true,
+        }
+    }
+}
+
+/// Syscall anomaly detection configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SyscallAnomalyConfig {
+    /// Enable syscall anomaly detection.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Treat denied syscall lines as anomalies even when syscall is in baseline.
+    #[serde(default)]
+    pub strict_mode: bool,
+
+    /// Emit anomaly alerts when a syscall appears outside the expected baseline.
+    #[serde(default = "default_true")]
+    pub alert_on_unknown_syscall: bool,
+
+    /// Allowed denied-syscall events per rolling minute before triggering an alert.
+    #[serde(default = "default_syscall_anomaly_max_denied_events_per_minute")]
+    pub max_denied_events_per_minute: u32,
+
+    /// Allowed total syscall telemetry events per rolling minute before triggering an alert.
+    #[serde(default = "default_syscall_anomaly_max_total_events_per_minute")]
+    pub max_total_events_per_minute: u32,
+
+    /// Maximum anomaly alerts emitted per rolling minute (global guardrail).
+    #[serde(default = "default_syscall_anomaly_max_alerts_per_minute")]
+    pub max_alerts_per_minute: u32,
+
+    /// Cooldown between identical anomaly alerts (seconds).
+    #[serde(default = "default_syscall_anomaly_alert_cooldown_secs")]
+    pub alert_cooldown_secs: u64,
+
+    /// Path to syscall anomaly log file (relative to ~/.zeroclaw unless absolute).
+    #[serde(default = "default_syscall_anomaly_log_path")]
+    pub log_path: String,
+
+    /// Expected syscall baseline. Unknown syscall names trigger anomaly when enabled.
+    #[serde(default = "default_syscall_anomaly_baseline_syscalls")]
+    pub baseline_syscalls: Vec<String>,
+}
+
+fn default_syscall_anomaly_max_denied_events_per_minute() -> u32 {
+    5
+}
+
+fn default_syscall_anomaly_max_total_events_per_minute() -> u32 {
+    120
+}
+
+fn default_syscall_anomaly_max_alerts_per_minute() -> u32 {
+    30
+}
+
+fn default_syscall_anomaly_alert_cooldown_secs() -> u64 {
+    20
+}
+
+fn default_syscall_anomaly_log_path() -> String {
+    "syscall-anomalies.log".to_string()
+}
+
+fn default_syscall_anomaly_baseline_syscalls() -> Vec<String> {
+    vec![
+        "read".to_string(),
+        "write".to_string(),
+        "open".to_string(),
+        "openat".to_string(),
+        "close".to_string(),
+        "stat".to_string(),
+        "fstat".to_string(),
+        "newfstatat".to_string(),
+        "lseek".to_string(),
+        "mmap".to_string(),
+        "mprotect".to_string(),
+        "munmap".to_string(),
+        "brk".to_string(),
+        "rt_sigaction".to_string(),
+        "rt_sigprocmask".to_string(),
+        "ioctl".to_string(),
+        "fcntl".to_string(),
+        "access".to_string(),
+        "pipe2".to_string(),
+        "dup".to_string(),
+        "dup2".to_string(),
+        "dup3".to_string(),
+        "epoll_create1".to_string(),
+        "epoll_ctl".to_string(),
+        "epoll_wait".to_string(),
+        "poll".to_string(),
+        "ppoll".to_string(),
+        "select".to_string(),
+        "futex".to_string(),
+        "clock_gettime".to_string(),
+        "nanosleep".to_string(),
+        "getpid".to_string(),
+        "gettid".to_string(),
+        "set_tid_address".to_string(),
+        "set_robust_list".to_string(),
+        "clone".to_string(),
+        "clone3".to_string(),
+        "fork".to_string(),
+        "execve".to_string(),
+        "wait4".to_string(),
+        "exit".to_string(),
+        "exit_group".to_string(),
+        "socket".to_string(),
+        "connect".to_string(),
+        "accept".to_string(),
+        "accept4".to_string(),
+        "listen".to_string(),
+        "sendto".to_string(),
+        "recvfrom".to_string(),
+        "sendmsg".to_string(),
+        "recvmsg".to_string(),
+        "getsockname".to_string(),
+        "getpeername".to_string(),
+        "setsockopt".to_string(),
+        "getsockopt".to_string(),
+        "getrandom".to_string(),
+        "statx".to_string(),
+    ]
+}
+
+impl Default for SyscallAnomalyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_true(),
+            strict_mode: false,
+            alert_on_unknown_syscall: default_true(),
+            max_denied_events_per_minute: default_syscall_anomaly_max_denied_events_per_minute(),
+            max_total_events_per_minute: default_syscall_anomaly_max_total_events_per_minute(),
+            max_alerts_per_minute: default_syscall_anomaly_max_alerts_per_minute(),
+            alert_cooldown_secs: default_syscall_anomaly_alert_cooldown_secs(),
+            log_path: default_syscall_anomaly_log_path(),
+            baseline_syscalls: default_syscall_anomaly_baseline_syscalls(),
         }
     }
 }
@@ -4032,6 +4392,7 @@ impl Default for Config {
             cost: CostConfig::default(),
             peripherals: PeripheralsConfig::default(),
             agents: HashMap::new(),
+            coordination: CoordinationConfig::default(),
             hooks: HooksConfig::default(),
             hardware: HardwareConfig::default(),
             query_classification: QueryClassificationConfig::default(),
@@ -4906,6 +5267,68 @@ impl Config {
         }
     }
 
+    fn normalize_reasoning_level_override(raw: Option<&str>, source: &str) -> Option<String> {
+        let value = raw?.trim();
+        if value.is_empty() {
+            return None;
+        }
+        let normalized = value.to_ascii_lowercase().replace(['-', '_'], "");
+        match normalized.as_str() {
+            "minimal" | "low" | "medium" | "high" | "xhigh" => Some(normalized),
+            _ => {
+                tracing::warn!(
+                    reasoning_level = %value,
+                    source,
+                    "Ignoring invalid reasoning level override"
+                );
+                None
+            }
+        }
+    }
+
+    /// Resolve provider reasoning level with backward-compatible runtime alias.
+    ///
+    /// Priority:
+    /// 1) `provider.reasoning_level` (canonical)
+    /// 2) `runtime.reasoning_level` (deprecated compatibility alias)
+    pub fn effective_provider_reasoning_level(&self) -> Option<String> {
+        let provider_level = Self::normalize_reasoning_level_override(
+            self.provider.reasoning_level.as_deref(),
+            "provider.reasoning_level",
+        );
+        let runtime_level = Self::normalize_reasoning_level_override(
+            self.runtime.reasoning_level.as_deref(),
+            "runtime.reasoning_level",
+        );
+
+        match (provider_level, runtime_level) {
+            (Some(provider_level), Some(runtime_level)) => {
+                if provider_level == runtime_level {
+                    tracing::warn!(
+                        reasoning_level = %provider_level,
+                        "`runtime.reasoning_level` is deprecated; keep only `provider.reasoning_level`"
+                    );
+                } else {
+                    tracing::warn!(
+                        provider_reasoning_level = %provider_level,
+                        runtime_reasoning_level = %runtime_level,
+                        "`runtime.reasoning_level` is deprecated and ignored when `provider.reasoning_level` is set"
+                    );
+                }
+                Some(provider_level)
+            }
+            (Some(provider_level), None) => Some(provider_level),
+            (None, Some(runtime_level)) => {
+                tracing::warn!(
+                    reasoning_level = %runtime_level,
+                    "`runtime.reasoning_level` is deprecated; using it as compatibility fallback to `provider.reasoning_level`"
+                );
+                Some(runtime_level)
+            }
+            (None, None) => None,
+        }
+    }
+
     fn lookup_model_provider_profile(
         &self,
         provider_name: &str,
@@ -5068,6 +5491,52 @@ impl Config {
         if self.security.estop.state_file.trim().is_empty() {
             anyhow::bail!("security.estop.state_file must not be empty");
         }
+        if self.security.syscall_anomaly.max_denied_events_per_minute == 0 {
+            anyhow::bail!(
+                "security.syscall_anomaly.max_denied_events_per_minute must be greater than 0"
+            );
+        }
+        if self.security.syscall_anomaly.max_total_events_per_minute == 0 {
+            anyhow::bail!(
+                "security.syscall_anomaly.max_total_events_per_minute must be greater than 0"
+            );
+        }
+        if self.security.syscall_anomaly.max_denied_events_per_minute
+            > self.security.syscall_anomaly.max_total_events_per_minute
+        {
+            anyhow::bail!(
+                "security.syscall_anomaly.max_denied_events_per_minute must be less than or equal to security.syscall_anomaly.max_total_events_per_minute"
+            );
+        }
+        if self.security.syscall_anomaly.max_alerts_per_minute == 0 {
+            anyhow::bail!("security.syscall_anomaly.max_alerts_per_minute must be greater than 0");
+        }
+        if self.security.syscall_anomaly.alert_cooldown_secs == 0 {
+            anyhow::bail!("security.syscall_anomaly.alert_cooldown_secs must be greater than 0");
+        }
+        if self.security.syscall_anomaly.log_path.trim().is_empty() {
+            anyhow::bail!("security.syscall_anomaly.log_path must not be empty");
+        }
+        for (i, syscall_name) in self
+            .security
+            .syscall_anomaly
+            .baseline_syscalls
+            .iter()
+            .enumerate()
+        {
+            let normalized = syscall_name.trim();
+            if normalized.is_empty() {
+                anyhow::bail!("security.syscall_anomaly.baseline_syscalls[{i}] must not be empty");
+            }
+            if !normalized
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '#')
+            {
+                anyhow::bail!(
+                    "security.syscall_anomaly.baseline_syscalls[{i}] contains invalid characters: {normalized}"
+                );
+            }
+        }
 
         // Scheduler
         if self.scheduler.max_concurrent == 0 {
@@ -5216,6 +5685,23 @@ impl Config {
             }
         }
 
+        // Delegate coordination runtime safety bounds.
+        if self.coordination.enabled && self.coordination.lead_agent.trim().is_empty() {
+            anyhow::bail!("coordination.lead_agent must not be empty when coordination is enabled");
+        }
+        if self.coordination.max_inbox_messages_per_agent == 0 {
+            anyhow::bail!("coordination.max_inbox_messages_per_agent must be greater than 0");
+        }
+        if self.coordination.max_dead_letters == 0 {
+            anyhow::bail!("coordination.max_dead_letters must be greater than 0");
+        }
+        if self.coordination.max_context_entries == 0 {
+            anyhow::bail!("coordination.max_context_entries must be greater than 0");
+        }
+        if self.coordination.max_seen_message_ids == 0 {
+            anyhow::bail!("coordination.max_seen_message_ids must be greater than 0");
+        }
+
         Ok(())
     }
 
@@ -5362,6 +5848,28 @@ impl Config {
                 "1" | "true" | "yes" | "on" => self.runtime.reasoning_enabled = Some(true),
                 "0" | "false" | "no" | "off" => self.runtime.reasoning_enabled = Some(false),
                 _ => {}
+            }
+        }
+
+        // Deprecated reasoning level alias: ZEROCLAW_REASONING_LEVEL or REASONING_LEVEL
+        let alias_level = std::env::var("ZEROCLAW_REASONING_LEVEL")
+            .ok()
+            .map(|value| ("ZEROCLAW_REASONING_LEVEL", value))
+            .or_else(|| {
+                std::env::var("REASONING_LEVEL")
+                    .ok()
+                    .map(|value| ("REASONING_LEVEL", value))
+            });
+        if let Some((env_name, level)) = alias_level {
+            if let Some(normalized) =
+                Self::normalize_reasoning_level_override(Some(&level), env_name)
+            {
+                tracing::warn!(
+                    env_name,
+                    reasoning_level = %normalized,
+                    "{env_name} is deprecated; prefer provider.reasoning_level in config"
+                );
+                self.runtime.reasoning_level = Some(normalized);
             }
         }
 
@@ -5970,6 +6478,26 @@ allowed_roots = []
         assert_eq!(r.docker.cpu_limit, Some(1.0));
         assert!(r.docker.read_only_rootfs);
         assert!(r.docker.mount_workspace);
+        assert_eq!(r.wasm.tools_dir, "tools/wasm");
+        assert_eq!(r.wasm.fuel_limit, 1_000_000);
+        assert_eq!(r.wasm.memory_limit_mb, 64);
+        assert_eq!(r.wasm.max_module_size_mb, 50);
+        assert!(!r.wasm.allow_workspace_read);
+        assert!(!r.wasm.allow_workspace_write);
+        assert!(r.wasm.allowed_hosts.is_empty());
+        assert!(r.wasm.security.require_workspace_relative_tools_dir);
+        assert!(r.wasm.security.reject_symlink_modules);
+        assert!(r.wasm.security.reject_symlink_tools_dir);
+        assert!(r.wasm.security.strict_host_validation);
+        assert_eq!(
+            r.wasm.security.capability_escalation_mode,
+            WasmCapabilityEscalationMode::Deny
+        );
+        assert_eq!(
+            r.wasm.security.module_hash_policy,
+            WasmModuleHashPolicy::Warn
+        );
+        assert!(r.wasm.security.module_sha256.is_empty());
     }
 
     #[test]
@@ -6103,6 +6631,7 @@ default_temperature = 0.7
             research: ResearchPhaseConfig::default(),
             reliability: ReliabilityConfig::default(),
             scheduler: SchedulerConfig::default(),
+            coordination: CoordinationConfig::default(),
             skills: SkillsConfig::default(),
             model_routes: Vec::new(),
             embedding_routes: Vec::new(),
@@ -6261,6 +6790,114 @@ reasoning_enabled = false
     }
 
     #[test]
+    async fn runtime_wasm_deserializes() {
+        let raw = r#"
+default_temperature = 0.7
+
+[runtime]
+kind = "wasm"
+
+[runtime.wasm]
+tools_dir = "skills/wasm"
+fuel_limit = 500000
+memory_limit_mb = 32
+max_module_size_mb = 8
+allow_workspace_read = true
+allow_workspace_write = false
+allowed_hosts = ["api.example.com", "cdn.example.com:443"]
+
+[runtime.wasm.security]
+require_workspace_relative_tools_dir = false
+reject_symlink_modules = false
+reject_symlink_tools_dir = false
+strict_host_validation = false
+capability_escalation_mode = "clamp"
+module_hash_policy = "enforce"
+
+[runtime.wasm.security.module_sha256]
+calc = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+"#;
+
+        let parsed: Config = toml::from_str(raw).unwrap();
+        assert_eq!(parsed.runtime.kind, "wasm");
+        assert_eq!(parsed.runtime.wasm.tools_dir, "skills/wasm");
+        assert_eq!(parsed.runtime.wasm.fuel_limit, 500_000);
+        assert_eq!(parsed.runtime.wasm.memory_limit_mb, 32);
+        assert_eq!(parsed.runtime.wasm.max_module_size_mb, 8);
+        assert!(parsed.runtime.wasm.allow_workspace_read);
+        assert!(!parsed.runtime.wasm.allow_workspace_write);
+        assert_eq!(
+            parsed.runtime.wasm.allowed_hosts,
+            vec!["api.example.com", "cdn.example.com:443"]
+        );
+        assert!(
+            !parsed
+                .runtime
+                .wasm
+                .security
+                .require_workspace_relative_tools_dir
+        );
+        assert!(!parsed.runtime.wasm.security.reject_symlink_modules);
+        assert!(!parsed.runtime.wasm.security.reject_symlink_tools_dir);
+        assert!(!parsed.runtime.wasm.security.strict_host_validation);
+        assert_eq!(
+            parsed.runtime.wasm.security.capability_escalation_mode,
+            WasmCapabilityEscalationMode::Clamp
+        );
+        assert_eq!(
+            parsed.runtime.wasm.security.module_hash_policy,
+            WasmModuleHashPolicy::Enforce
+        );
+        assert_eq!(
+            parsed.runtime.wasm.security.module_sha256.get("calc"),
+            Some(&"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string())
+        );
+    }
+
+    #[test]
+    async fn runtime_wasm_dev_template_deserializes() {
+        let raw = include_str!("../../dev/config.wasm.dev.toml");
+        let parsed: Config = toml::from_str(raw).expect("dev wasm template should parse");
+
+        assert_eq!(parsed.runtime.kind, "wasm");
+        assert!(parsed.runtime.wasm.allow_workspace_read);
+        assert!(parsed.runtime.wasm.allow_workspace_write);
+        assert_eq!(
+            parsed.runtime.wasm.security.capability_escalation_mode,
+            WasmCapabilityEscalationMode::Clamp
+        );
+    }
+
+    #[test]
+    async fn runtime_wasm_staging_template_deserializes() {
+        let raw = include_str!("../../dev/config.wasm.staging.toml");
+        let parsed: Config = toml::from_str(raw).expect("staging wasm template should parse");
+
+        assert_eq!(parsed.runtime.kind, "wasm");
+        assert!(parsed.runtime.wasm.allow_workspace_read);
+        assert!(!parsed.runtime.wasm.allow_workspace_write);
+        assert_eq!(
+            parsed.runtime.wasm.security.capability_escalation_mode,
+            WasmCapabilityEscalationMode::Deny
+        );
+    }
+
+    #[test]
+    async fn runtime_wasm_prod_template_deserializes() {
+        let raw = include_str!("../../dev/config.wasm.prod.toml");
+        let parsed: Config = toml::from_str(raw).expect("prod wasm template should parse");
+
+        assert_eq!(parsed.runtime.kind, "wasm");
+        assert!(!parsed.runtime.wasm.allow_workspace_read);
+        assert!(!parsed.runtime.wasm.allow_workspace_write);
+        assert!(parsed.runtime.wasm.allowed_hosts.is_empty());
+        assert_eq!(
+            parsed.runtime.wasm.security.capability_escalation_mode,
+            WasmCapabilityEscalationMode::Deny
+        );
+    }
+
+    #[test]
     async fn model_support_vision_deserializes() {
         let raw = r#"
 default_temperature = 0.7
@@ -6289,6 +6926,46 @@ reasoning_level = "high"
 
         let parsed: Config = toml::from_str(raw).unwrap();
         assert_eq!(parsed.provider.reasoning_level.as_deref(), Some("high"));
+        assert_eq!(
+            parsed.effective_provider_reasoning_level().as_deref(),
+            Some("high")
+        );
+    }
+
+    #[test]
+    async fn runtime_reasoning_level_alias_deserializes() {
+        let raw = r#"
+default_temperature = 0.7
+
+[runtime]
+reasoning_level = "xhigh"
+"#;
+
+        let parsed: Config = toml::from_str(raw).unwrap();
+        assert_eq!(parsed.runtime.reasoning_level.as_deref(), Some("xhigh"));
+        assert_eq!(
+            parsed.effective_provider_reasoning_level().as_deref(),
+            Some("xhigh")
+        );
+    }
+
+    #[test]
+    async fn provider_reasoning_level_wins_over_runtime_alias() {
+        let raw = r#"
+default_temperature = 0.7
+
+[provider]
+reasoning_level = "medium"
+
+[runtime]
+reasoning_level = "high"
+"#;
+
+        let parsed: Config = toml::from_str(raw).unwrap();
+        assert_eq!(
+            parsed.effective_provider_reasoning_level().as_deref(),
+            Some("medium")
+        );
     }
 
     #[test]
@@ -6358,6 +7035,7 @@ tool_dispatcher = "xml"
             research: ResearchPhaseConfig::default(),
             reliability: ReliabilityConfig::default(),
             scheduler: SchedulerConfig::default(),
+            coordination: CoordinationConfig::default(),
             skills: SkillsConfig::default(),
             model_routes: Vec::new(),
             embedding_routes: Vec::new(),
@@ -8192,6 +8870,36 @@ default_model = "legacy-model"
     }
 
     #[test]
+    async fn env_override_reasoning_level_alias() {
+        let _env_guard = env_override_lock().await;
+        let mut config = Config::default();
+        assert_eq!(config.runtime.reasoning_level, None);
+
+        std::env::set_var("ZEROCLAW_REASONING_LEVEL", "xhigh");
+        config.apply_env_overrides();
+        assert_eq!(config.runtime.reasoning_level.as_deref(), Some("xhigh"));
+        assert_eq!(
+            config.effective_provider_reasoning_level().as_deref(),
+            Some("xhigh")
+        );
+
+        std::env::remove_var("ZEROCLAW_REASONING_LEVEL");
+    }
+
+    #[test]
+    async fn env_override_reasoning_level_alias_invalid_ignored() {
+        let _env_guard = env_override_lock().await;
+        let mut config = Config::default();
+        config.runtime.reasoning_level = Some("medium".to_string());
+
+        std::env::set_var("ZEROCLAW_REASONING_LEVEL", "invalid");
+        config.apply_env_overrides();
+        assert_eq!(config.runtime.reasoning_level.as_deref(), Some("medium"));
+
+        std::env::remove_var("ZEROCLAW_REASONING_LEVEL");
+    }
+
+    #[test]
     async fn env_override_model_support_vision() {
         let _env_guard = env_override_lock().await;
         let mut config = Config::default();
@@ -8772,6 +9480,9 @@ default_temperature = 0.7
         assert_eq!(parsed.security.otp.method, OtpMethod::Totp);
         assert!(!parsed.security.estop.enabled);
         assert!(parsed.security.estop.require_otp_to_resume);
+        assert!(parsed.security.syscall_anomaly.enabled);
+        assert!(parsed.security.syscall_anomaly.alert_on_unknown_syscall);
+        assert!(!parsed.security.syscall_anomaly.baseline_syscalls.is_empty());
     }
 
     #[test]
@@ -8795,12 +9506,35 @@ gated_domain_categories = ["banking"]
 enabled = true
 state_file = "~/.zeroclaw/estop-state.json"
 require_otp_to_resume = true
+
+[security.syscall_anomaly]
+enabled = true
+strict_mode = true
+alert_on_unknown_syscall = true
+max_denied_events_per_minute = 3
+max_total_events_per_minute = 60
+max_alerts_per_minute = 10
+alert_cooldown_secs = 15
+log_path = "syscall-anomalies.log"
+baseline_syscalls = ["read", "write", "openat", "close"]
 "#,
         )
         .unwrap();
 
         assert!(parsed.security.otp.enabled);
         assert!(parsed.security.estop.enabled);
+        assert!(parsed.security.syscall_anomaly.strict_mode);
+        assert_eq!(
+            parsed.security.syscall_anomaly.max_denied_events_per_minute,
+            3
+        );
+        assert_eq!(
+            parsed.security.syscall_anomaly.max_total_events_per_minute,
+            60
+        );
+        assert_eq!(parsed.security.syscall_anomaly.max_alerts_per_minute, 10);
+        assert_eq!(parsed.security.syscall_anomaly.alert_cooldown_secs, 15);
+        assert_eq!(parsed.security.syscall_anomaly.baseline_syscalls.len(), 4);
         assert_eq!(parsed.security.otp.gated_actions.len(), 2);
         assert_eq!(parsed.security.otp.gated_domains.len(), 2);
         parsed.validate().unwrap();
@@ -8835,5 +9569,147 @@ require_otp_to_resume = true
             .validate()
             .expect_err("expected ttl validation failure");
         assert!(err.to_string().contains("token_ttl_secs"));
+    }
+
+    #[test]
+    async fn security_validation_rejects_zero_syscall_threshold() {
+        let mut config = Config::default();
+        config.security.syscall_anomaly.max_denied_events_per_minute = 0;
+
+        let err = config
+            .validate()
+            .expect_err("expected syscall threshold validation failure");
+        assert!(err.to_string().contains("max_denied_events_per_minute"));
+    }
+
+    #[test]
+    async fn security_validation_rejects_invalid_syscall_baseline_name() {
+        let mut config = Config::default();
+        config.security.syscall_anomaly.baseline_syscalls =
+            vec!["openat".into(), "bad name".into()];
+
+        let err = config
+            .validate()
+            .expect_err("expected syscall baseline name validation failure");
+        assert!(err.to_string().contains("baseline_syscalls"));
+    }
+
+    #[test]
+    async fn security_validation_rejects_zero_syscall_alert_budget() {
+        let mut config = Config::default();
+        config.security.syscall_anomaly.max_alerts_per_minute = 0;
+
+        let err = config
+            .validate()
+            .expect_err("expected syscall alert budget validation failure");
+        assert!(err.to_string().contains("max_alerts_per_minute"));
+    }
+
+    #[test]
+    async fn security_validation_rejects_zero_syscall_cooldown() {
+        let mut config = Config::default();
+        config.security.syscall_anomaly.alert_cooldown_secs = 0;
+
+        let err = config
+            .validate()
+            .expect_err("expected syscall cooldown validation failure");
+        assert!(err.to_string().contains("alert_cooldown_secs"));
+    }
+
+    #[test]
+    async fn security_validation_rejects_denied_threshold_above_total_threshold() {
+        let mut config = Config::default();
+        config.security.syscall_anomaly.max_denied_events_per_minute = 10;
+        config.security.syscall_anomaly.max_total_events_per_minute = 5;
+
+        let err = config
+            .validate()
+            .expect_err("expected syscall threshold ordering validation failure");
+        assert!(err
+            .to_string()
+            .contains("max_denied_events_per_minute must be less than or equal"));
+    }
+
+    #[test]
+    async fn coordination_config_defaults() {
+        let config = Config::default();
+        assert!(config.coordination.enabled);
+        assert_eq!(config.coordination.lead_agent, "delegate-lead");
+        assert_eq!(config.coordination.max_inbox_messages_per_agent, 256);
+        assert_eq!(config.coordination.max_dead_letters, 256);
+        assert_eq!(config.coordination.max_context_entries, 512);
+        assert_eq!(config.coordination.max_seen_message_ids, 4096);
+    }
+
+    #[test]
+    async fn config_roundtrip_with_coordination_section() {
+        let mut config = Config::default();
+        config.coordination.enabled = true;
+        config.coordination.lead_agent = "runtime-lead".into();
+        config.coordination.max_inbox_messages_per_agent = 128;
+        config.coordination.max_dead_letters = 64;
+        config.coordination.max_context_entries = 32;
+        config.coordination.max_seen_message_ids = 1024;
+
+        let toml_str = toml::to_string_pretty(&config).unwrap();
+        let parsed: Config = toml::from_str(&toml_str).unwrap();
+        assert!(parsed.coordination.enabled);
+        assert_eq!(parsed.coordination.lead_agent, "runtime-lead");
+        assert_eq!(parsed.coordination.max_inbox_messages_per_agent, 128);
+        assert_eq!(parsed.coordination.max_dead_letters, 64);
+        assert_eq!(parsed.coordination.max_context_entries, 32);
+        assert_eq!(parsed.coordination.max_seen_message_ids, 1024);
+    }
+
+    #[test]
+    async fn coordination_validation_rejects_invalid_limits_and_lead_agent() {
+        let mut config = Config::default();
+        config.coordination.max_inbox_messages_per_agent = 0;
+        let err = config
+            .validate()
+            .expect_err("expected coordination inbox limit validation failure");
+        assert!(err
+            .to_string()
+            .contains("coordination.max_inbox_messages_per_agent"));
+
+        let mut config = Config::default();
+        config.coordination.max_dead_letters = 0;
+        let err = config
+            .validate()
+            .expect_err("expected coordination dead-letter limit validation failure");
+        assert!(err.to_string().contains("coordination.max_dead_letters"));
+
+        let mut config = Config::default();
+        config.coordination.max_context_entries = 0;
+        let err = config
+            .validate()
+            .expect_err("expected coordination context limit validation failure");
+        assert!(err.to_string().contains("coordination.max_context_entries"));
+
+        let mut config = Config::default();
+        config.coordination.max_seen_message_ids = 0;
+        let err = config
+            .validate()
+            .expect_err("expected coordination dedupe-window validation failure");
+        assert!(err
+            .to_string()
+            .contains("coordination.max_seen_message_ids"));
+
+        let mut config = Config::default();
+        config.coordination.lead_agent = "   ".into();
+        let err = config
+            .validate()
+            .expect_err("expected coordination lead-agent validation failure");
+        assert!(err.to_string().contains("coordination.lead_agent"));
+    }
+
+    #[test]
+    async fn coordination_validation_allows_empty_lead_agent_when_disabled() {
+        let mut config = Config::default();
+        config.coordination.enabled = false;
+        config.coordination.lead_agent = String::new();
+        config
+            .validate()
+            .expect("disabled coordination should allow empty lead agent");
     }
 }
