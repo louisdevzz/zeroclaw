@@ -1188,47 +1188,81 @@ fn install_registry_skill_source(
     let skill_dir = skills_path.join(&skill_dir_name);
     std::fs::create_dir_all(&skill_dir)?;
 
-    let mut files_written = 0usize;
+    // Run the actual work in a closure so we can clean up skill_dir on any error.
+    let result = (|| -> Result<usize> {
+        let mut files_written = 0usize;
 
-    // Download each tool
-    for tool in &index.tools {
-        // Validate tool name — no path traversal
-        if tool.name.contains("..") || tool.name.contains('/') || tool.name.contains('\\') {
-            anyhow::bail!("registry returned unsafe tool name: '{}'", tool.name);
+        // Download each tool
+        for tool in &index.tools {
+            // Validate tool name — no path traversal
+            if tool.name.contains("..") || tool.name.contains('/') || tool.name.contains('\\') {
+                anyhow::bail!("registry returned unsafe tool name: '{}'", tool.name);
+            }
+
+            let tool_dir = skill_dir.join("tools").join(&tool.name);
+            std::fs::create_dir_all(&tool_dir)?;
+
+            // Download tool.wasm
+            println!("  Downloading tool: {}", tool.name);
+            let wasm_bytes = fetch_url_blocking(&tool.wasm_url)
+                .with_context(|| format!("failed to download WASM for tool '{}'", tool.name))?;
+            std::fs::write(tool_dir.join("tool.wasm"), &wasm_bytes)?;
+            files_written += 1;
+
+            // Download manifest.json
+            let manifest_bytes = fetch_url_blocking(&tool.manifest_url)
+                .with_context(|| format!("failed to download manifest for tool '{}'", tool.name))?;
+
+            // Validate manifest before writing (ensures it parses as WasmManifest)
+            let _manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes)
+                .with_context(|| format!("invalid manifest JSON for tool '{}'", tool.name))?;
+            std::fs::write(tool_dir.join("manifest.json"), &manifest_bytes)?;
+            files_written += 1;
         }
 
-        let tool_dir = skill_dir.join("tools").join(&tool.name);
-        std::fs::create_dir_all(&tool_dir)?;
-
-        // Download tool.wasm
-        println!("  Downloading tool: {}", tool.name);
-        let wasm_bytes = fetch_url_blocking(&tool.wasm_url)
-            .with_context(|| format!("failed to download WASM for tool '{}'", tool.name))?;
-        std::fs::write(tool_dir.join("tool.wasm"), &wasm_bytes)?;
+        // Write minimal SKILL.toml using safe TOML serialization to avoid
+        // injection via description strings containing quotes or special chars.
+        #[derive(serde::Serialize)]
+        struct SkillMeta<'a> {
+            name: &'a str,
+            description: &'a str,
+            version: &'a str,
+            author: &'a str,
+            tags: &'a [&'a str],
+        }
+        #[derive(serde::Serialize)]
+        struct SkillToml<'a> {
+            skill: SkillMeta<'a>,
+        }
+        let description = index
+            .description
+            .as_deref()
+            .unwrap_or("Installed from ZeroMarket registry");
+        let skill_toml_value = SkillToml {
+            skill: SkillMeta {
+                name: &skill_dir_name,
+                description,
+                version: &index.version,
+                author: namespace,
+                tags: &["wasm", "zeromarket"],
+            },
+        };
+        let skill_toml_str =
+            toml::to_string(&skill_toml_value).context("failed to serialize SKILL.toml")?;
+        std::fs::write(skill_dir.join("SKILL.toml"), skill_toml_str)?;
         files_written += 1;
 
-        // Download manifest.json
-        let manifest_bytes = fetch_url_blocking(&tool.manifest_url)
-            .with_context(|| format!("failed to download manifest for tool '{}'", tool.name))?;
+        Ok(files_written)
+    })();
 
-        // Validate manifest before writing (ensures it parses as WasmManifest)
-        let _manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes)
-            .with_context(|| format!("invalid manifest JSON for tool '{}'", tool.name))?;
-        std::fs::write(tool_dir.join("manifest.json"), &manifest_bytes)?;
-        files_written += 1;
+    match result {
+        Ok(files_written) => Ok((skill_dir, files_written)),
+        Err(e) => {
+            // Remove partially-written skill_dir to avoid leaving broken state.
+            let _ = std::fs::remove_dir_all(&skill_dir);
+            Err(e)
+        }
     }
-
-    // Write minimal SKILL.toml so `zeroclaw skill list` shows this package
-    let skill_toml = format!(
-        "[skill]\nname = \"{ns_name}\"\ndescription = \"{desc}\"\nversion = \"{ver}\"\nauthor = \"{namespace}\"\ntags = [\"wasm\", \"zeromarket\"]\n",
-        ns_name = skill_dir_name,
-        desc = index.description.as_deref().unwrap_or("Installed from ZeroMarket registry"),
-        ver = index.version,
-    );
-    std::fs::write(skill_dir.join("SKILL.toml"), skill_toml)?;
-    files_written += 1;
-
-    Ok((skill_dir, files_written))
 }
 
 /// Minimal JSON shape returned by the ZeroMarket registry package index endpoint.
@@ -1263,6 +1297,10 @@ fn fetch_url_blocking(url: &str) -> Result<Vec<u8>> {
             "--show-error",
             "--fail",
             "--location",
+            "--proto",
+            "=https",
+            "--max-redirs",
+            "5",
             "--max-time",
             "30",
             url,

@@ -32,7 +32,7 @@ use super::traits::{Tool, ToolResult};
 use anyhow::{bail, Context};
 use async_trait::async_trait;
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Maximum tool output size (1 MiB).
 const MAX_OUTPUT_BYTES: usize = 1_048_576;
@@ -45,7 +45,7 @@ const WASM_TIMEOUT_SECS: u64 = 30;
 #[cfg(feature = "wasm-tools")]
 mod inner {
     use super::{
-        async_trait, bail, Context, PathBuf, Tool, ToolResult, Value, MAX_OUTPUT_BYTES,
+        async_trait, bail, Context, Path, PathBuf, Tool, ToolResult, Value, MAX_OUTPUT_BYTES,
         WASM_TIMEOUT_SECS,
     };
     use wasmtime::{Config as WtConfig, Engine, Linker, Module, Store};
@@ -59,13 +59,13 @@ mod inner {
         name: String,
         description: String,
         parameters_schema: Value,
-        wasm_path: PathBuf,
         engine: Engine,
+        module: Module,
     }
 
     impl WasmTool {
         pub fn load(
-            path: &PathBuf,
+            path: &Path,
             name: String,
             description: String,
             parameters_schema: Value,
@@ -75,25 +75,23 @@ mod inner {
 
             let engine = Engine::new(&cfg).context("failed to create WASM engine")?;
 
-            // Pre-validate: compile once to catch bad binaries early.
             let bytes = std::fs::read(path)
                 .with_context(|| format!("cannot read WASM file: {}", path.display()))?;
-            Module::new(&engine, &bytes)
+            let module = Module::new(&engine, &bytes)
                 .with_context(|| format!("cannot compile WASM module: {}", path.display()))?;
 
             Ok(Self {
                 name,
                 description,
                 parameters_schema,
-                wasm_path: path.clone(),
                 engine,
+                module,
             })
         }
 
         fn invoke_sync(&self, args: &Value) -> anyhow::Result<ToolResult> {
             let input_bytes = serde_json::to_vec(args)?;
 
-            // stdout_pipe is Clone (Arc-based), so we hold a copy to read after execution.
             let stdout_pipe = MemoryOutputPipe::new(MAX_OUTPUT_BYTES);
             let stdout_for_read = stdout_pipe.clone();
 
@@ -103,24 +101,44 @@ mod inner {
                 .build_p1();
 
             let mut store = Store::new(&self.engine, wasi_ctx);
+            // epoch_deadline is in ticks; the incrementer thread below fires at 1 Hz.
             store.set_epoch_deadline(WASM_TIMEOUT_SECS);
-
-            let bytes = std::fs::read(&self.wasm_path)?;
-            let module = Module::new(&self.engine, &bytes)?;
 
             let mut linker: Linker<WasiP1Ctx> = Linker::new(&self.engine);
             preview1::add_to_linker_sync(&mut linker, |ctx| ctx)
                 .context("failed to add WASI to linker")?;
 
-            let instance = linker.instantiate(&mut store, &module)?;
+            let instance = linker.instantiate(&mut store, &self.module)?;
 
-            // Call _start (the WASI main entry point).
-            let start = instance
+            // Spawn a background thread that increments the epoch every second.
+            // When the deadline is reached wasmtime returns a trap, unblocking
+            // the call below.
+            let engine_for_ticker = self.engine.clone();
+            let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+            let ticker = std::thread::spawn(move || {
+                while stop_rx
+                    .recv_timeout(std::time::Duration::from_secs(1))
+                    .is_err()
+                {
+                    engine_for_ticker.increment_epoch();
+                }
+            });
+
+            let call_result = instance
                 .get_typed_func::<(), ()>(&mut store, "_start")
-                .context("WASM module must export '_start' (compile as a WASI binary)")?;
-            start.call(&mut store, ())?;
+                .context("WASM module must export '_start' (compile as a WASI binary)")
+                .and_then(|start| {
+                    start
+                        .call(&mut store, ())
+                        .context("WASM execution failed or timed out")
+                });
 
-            // Read captured stdout.
+            // Stop the epoch ticker regardless of outcome.
+            let _ = stop_tx.send(());
+            let _ = ticker.join();
+
+            call_result?;
+
             let raw = stdout_for_read.contents().to_vec();
             if raw.is_empty() {
                 bail!("WASM tool wrote nothing to stdout");
@@ -151,9 +169,11 @@ mod inner {
         }
 
         async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {
+            // Clone the fields needed inside the blocking closure.
+            // Engine and Module are cheaply Arc-backed clones.
             let name = self.name.clone();
-            let wasm_path = self.wasm_path.clone();
             let engine = self.engine.clone();
+            let module = self.module.clone();
             let schema = self.parameters_schema.clone();
             let desc = self.description.clone();
 
@@ -162,8 +182,8 @@ mod inner {
                     name: name.clone(),
                     description: desc,
                     parameters_schema: schema,
-                    wasm_path,
                     engine,
+                    module,
                 };
                 tool.invoke_sync(&args)
                     .with_context(|| format!("WASM tool '{}' execution failed", name))
@@ -192,7 +212,7 @@ mod inner {
 
     impl WasmTool {
         pub fn load(
-            _path: &PathBuf,
+            _path: &Path,
             name: String,
             description: String,
             parameters_schema: Value,
@@ -265,7 +285,7 @@ fn default_manifest_version() -> String {
 }
 
 impl WasmManifest {
-    pub fn load_from(path: &PathBuf) -> anyhow::Result<Self> {
+    pub fn load_from(path: &Path) -> anyhow::Result<Self> {
         let bytes = std::fs::read(path)
             .with_context(|| format!("cannot read manifest: {}", path.display()))?;
         serde_json::from_slice(&bytes)
