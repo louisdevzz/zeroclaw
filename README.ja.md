@@ -216,9 +216,29 @@ zeroclaw agent --provider anthropic -m "hello"
 ### ランタイムサポート（現状）
 
 - ✅ 現在サポート: `runtime.kind = "native"` または `runtime.kind = "docker"`
-- 🚧 計画中（未実装）: WASM / エッジランタイム
+- 🚧 計画中（未実装）: WASM エッジランタイム（runtime.kind ベース）
 
 未対応の `runtime.kind` が設定された場合、ZeroClaw は native へのサイレントフォールバックではなく、明確なエラーで終了します。
+
+### WASM スキル（ZeroMarket）
+
+ZeroClaw は [ZeroMarket](https://zeromarket.vercel.app) レジストリからインストール可能な WASM コンパイル済みスキルをサポートしています：
+
+```bash
+# ZeroMarket からスキルをインストール
+zeroclaw skill install namespace/name
+```
+
+スキルは `~/.zeroclaw/workspace/skills/<name>/` にインストールされ、agent 起動時に自動的にツールとして読み込まれます。
+
+WASM ツールサポートを有効にしてビルド（デフォルトで有効）：
+
+```bash
+cargo build --release                         # wasm-tools はデフォルトで有効
+cargo build --release --no-default-features   # バイナリサイズ削減のため wasm-tools を無効化
+```
+
+ZeroMarket へのスキル公開: WASM にコンパイルし、`tool.wasm`、`manifest.json`、`SKILL.md` を ZeroMarket のアップロードページからアップロードします。`zeroclaw skill new <name>` で新規スキルプロジェクトの雛形を生成できます。
 
 ### メモリシステム（フルスタック検索エンジン）
 

@@ -221,9 +221,29 @@ zeroclaw agent --provider anthropic -m "hello"
 ### 运行时支持（当前）
 
 - ✅ 当前支持：`runtime.kind = "native"` 或 `runtime.kind = "docker"`
-- 🚧 计划中，尚未实现：WASM / 边缘运行时
+- 🚧 计划中，尚未实现：WASM 边缘运行时（基于 runtime.kind）
 
 配置了不支持的 `runtime.kind` 时，ZeroClaw 会以明确的错误退出，而非静默回退到 native。
+
+### WASM 技能（ZeroMarket）
+
+ZeroClaw 支持从 [ZeroMarket](https://zeromarket.vercel.app) 注册表安装 WASM 编译的技能：
+
+```bash
+# 从 ZeroMarket 安装技能
+zeroclaw skill install namespace/name
+```
+
+技能安装至 `~/.zeroclaw/workspace/skills/<name>/`，在 agent 运行时自动作为工具加载。
+
+编译时开启 WASM 工具支持（默认启用）：
+
+```bash
+cargo build --release                         # 默认启用 wasm-tools
+cargo build --release --no-default-features   # 禁用 wasm-tools 以减小二进制体积
+```
+
+发布自己的技能到 ZeroMarket：将 WASM 编译产物连同 `tool.wasm`、`manifest.json` 和 `SKILL.md` 通过 ZeroMarket 上传页面提交。使用 `zeroclaw skill new <name>` 可快速创建新技能项目脚手架。
 
 ### 记忆系统（全栈搜索引擎）
 

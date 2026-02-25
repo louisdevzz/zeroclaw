@@ -433,7 +433,7 @@ Every subsystem is a **trait** — swap implementations with a config change, ze
 | **AI Models**     | `Provider`       | Provider catalog via `zeroclaw providers` (built-ins + aliases, plus custom endpoints)                                                                                     | `custom:https://your-api.com` (OpenAI-compatible) or `anthropic-custom:https://your-api.com` |
 | **Channels**      | `Channel`        | CLI, Telegram, Discord, Slack, Mattermost, iMessage, Matrix, Signal, WhatsApp, Linq, Email, IRC, Lark, DingTalk, QQ, Nostr, Webhook                                        | Any messaging API                                                                            |
 | **Memory**        | `Memory`         | SQLite hybrid search, PostgreSQL backend (configurable storage provider), Lucid bridge, Markdown files, explicit `none` backend, snapshot/hydrate, optional response cache | Any persistence backend                                                                      |
-| **Tools**         | `Tool`           | shell/file/memory, cron/schedule, git, pushover, browser, http_request, screenshot/image_info, composio (opt-in), delegate, hardware tools                                 | Any capability                                                                               |
+| **Tools**         | `Tool`           | shell/file/memory, cron/schedule, git, pushover, browser, http_request, screenshot/image_info, composio (opt-in), delegate, hardware tools, **WASM skills** (opt-in)       | Any capability                                                                               |
 | **Observability** | `Observer`       | Noop, Log, Multi                                                                                                                                                           | Prometheus, OTel                                                                             |
 | **Runtime**       | `RuntimeAdapter` | Native, Docker (sandboxed)                                                                                                                                                 | Additional runtimes can be added via adapter; unsupported kinds fail fast                    |
 | **Security**      | `SecurityPolicy` | Gateway pairing, sandbox, allowlists, rate limits, filesystem scoping, encrypted secrets                                                                                   | —                                                                                            |
@@ -1002,7 +1002,7 @@ See [aieos.org](https://aieos.org) for the full schema and live examples.
 | `providers`                                   | List supported providers and aliases                                                 |
 | `channel`                                     | List/start/doctor channels and bind Telegram identities                              |
 | `integrations`                                | Inspect integration setup details                                                    |
-| `skills`                                      | List/install/remove skills                                                           |
+| `skills`                                      | List/install/remove skills; `install namespace/name` fetches from ZeroMarket registry |
 | `migrate`                                     | Import data from other runtimes (`migrate openclaw`)                                 |
 | `completions`                                 | Generate shell completion scripts (`bash`, `fish`, `zsh`, `powershell`, `elvish`)    |
 | `hardware`                                    | USB discover/introspect/info commands                                                |
@@ -1048,6 +1048,26 @@ open_skills_enabled = true
 You can also override at runtime with `ZEROCLAW_OPEN_SKILLS_ENABLED`, `ZEROCLAW_OPEN_SKILLS_DIR`, and `ZEROCLAW_SKILLS_PROMPT_MODE` (`full` or `compact`).
 
 Skill installs are now gated by a built-in static security audit. `zeroclaw skills install <source>` blocks symlinks, script-like files, unsafe markdown link patterns, and high-risk shell payload snippets before accepting a skill. You can run `zeroclaw skills audit <source_or_name>` to validate a local directory or an installed skill manually.
+
+### WASM Skills
+
+ZeroClaw supports WASM-compiled skills installable from the [ZeroMarket](https://zeromarket.vercel.app) registry:
+
+```bash
+# Install a skill from ZeroMarket
+zeroclaw skill install namespace/name
+```
+
+Skills are installed to `~/.zeroclaw/workspace/skills/<name>/` and loaded automatically as tools at agent runtime.
+
+Build with WASM tool support (enabled by default):
+
+```bash
+cargo build --release                         # wasm-tools enabled by default
+cargo build --release --no-default-features   # disable wasm-tools for smaller binary
+```
+
+Publish your own skill to ZeroMarket: compile to WASM, upload `tool.wasm`, `manifest.json`, and `SKILL.md` via the ZeroMarket upload page. Use `zeroclaw skill new <name>` to scaffold a new skill project.
 
 ## Development
 

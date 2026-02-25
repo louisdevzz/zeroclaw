@@ -379,6 +379,7 @@ Examples:
     },
 
     /// Manage skills (user-defined capabilities)
+    #[command(name = "skill", alias = "skills")]
     Skills {
         #[command(subcommand)]
         skill_command: SkillCommands,

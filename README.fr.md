@@ -730,6 +730,16 @@ open_skills_enabled = true
 
 Vous pouvez également surcharger au runtime avec `ZEROCLAW_OPEN_SKILLS_ENABLED` et `ZEROCLAW_OPEN_SKILLS_DIR`.
 
+### Skills WASM (ZeroMarket)
+
+ZeroClaw prend en charge les skills compilées en WASM installables depuis le registre [ZeroMarket](https://zeromarket.vercel.app) :
+
+```bash
+zeroclaw skill install namespace/name
+```
+
+Les skills sont installées dans `~/.zeroclaw/workspace/skills/<name>/` et chargées automatiquement comme outils. Activé par défaut (`--features wasm-tools`).
+
 ## Développement
 
 ```bash

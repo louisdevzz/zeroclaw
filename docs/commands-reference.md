@@ -166,7 +166,12 @@ Channel runtime also watches `config.toml` and hot-applies updates to:
 - `zeroclaw skills install <source>`
 - `zeroclaw skills remove <name>`
 
-`<source>` accepts git remotes (`https://...`, `http://...`, `ssh://...`, and `git@host:owner/repo.git`) or a local filesystem path.
+`<source>` accepts:
+- **Registry packages**: `namespace/name` or `namespace/name@version` — fetched from the configured registry (default: ZeroMarket)
+- **Git remotes**: `https://...`, `http://...`, `ssh://...`, `git@host:owner/repo.git`
+- **Local filesystem paths**: relative or absolute
+
+Registry packages are installed to `~/.zeroclaw/workspace/skills/<name>/`.
 
 `skills install` always runs a built-in static security audit before the skill is accepted. The audit blocks:
 - symlinks inside the skill package

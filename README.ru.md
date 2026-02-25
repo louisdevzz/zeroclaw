@@ -216,9 +216,29 @@ zeroclaw agent --provider anthropic -m "hello"
 ### Поддержка runtime (текущая)
 
 - ✅ Поддерживается сейчас: `runtime.kind = "native"` или `runtime.kind = "docker"`
-- 🚧 Запланировано, но ещё не реализовано: WASM / edge-runtime
+- 🚧 Запланировано, но ещё не реализовано: WASM edge-runtime (на основе runtime.kind)
 
 При указании неподдерживаемого `runtime.kind` ZeroClaw завершается с явной ошибкой, а не молча откатывается к native.
+
+### WASM-скиллы (ZeroMarket)
+
+ZeroClaw поддерживает скиллы, скомпилированные в WASM, устанавливаемые из реестра [ZeroMarket](https://zeromarket.vercel.app):
+
+```bash
+# Установить скилл из ZeroMarket
+zeroclaw skill install namespace/name
+```
+
+Скиллы устанавливаются в `~/.zeroclaw/workspace/skills/<name>/` и автоматически загружаются как инструменты при запуске агента.
+
+Сборка с поддержкой WASM-инструментов (включена по умолчанию):
+
+```bash
+cargo build --release                         # wasm-tools включён по умолчанию
+cargo build --release --no-default-features   # отключить wasm-tools для уменьшения размера бинарника
+```
+
+Публикация собственного скилла в ZeroMarket: скомпилируйте в WASM, загрузите `tool.wasm`, `manifest.json` и `SKILL.md` через страницу загрузки ZeroMarket. Используйте `zeroclaw skill new <name>` для создания нового проекта скилла из шаблона.
 
 ### Система памяти (полнофункциональный поисковый движок)
 

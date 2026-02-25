@@ -909,6 +909,16 @@ open_skills_enabled = true
 
 Bạn cũng có thể ghi đè lúc runtime với `ZEROCLAW_OPEN_SKILLS_ENABLED` và `ZEROCLAW_OPEN_SKILLS_DIR`.
 
+### Skills WASM (ZeroMarket)
+
+ZeroClaw hỗ trợ các skill biên dịch sang WASM, có thể cài đặt từ registry [ZeroMarket](https://zeromarket.vercel.app):
+
+```bash
+zeroclaw skill install namespace/name
+```
+
+Skills được cài vào `~/.zeroclaw/workspace/skills/<name>/` và tự động nạp vào agent lúc chạy. Bật mặc định (`--features wasm-tools`).
+
 ## Phát triển
 
 ```bash
