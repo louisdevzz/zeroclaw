@@ -683,7 +683,6 @@ impl Default for WasmConfig {
     }
 }
 
-
 /// Multimodal (image) handling configuration (`[multimodal]` section).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MultimodalConfig {
